@@ -242,11 +242,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="hdr-right"><div class="logout-btn" onclick="logout()">Logout</div><div id="main-sync-dot" class="sync-dot"></div></div>
   </div>
 
-  <div class="stat-row">
-    <div class="stat"><div class="stat-lbl">Today's income</div><div class="stat-val" id="s-inc">$0.00</div></div>
-    <div class="stat"><div class="stat-lbl">Today's expenses</div><div class="stat-val" id="s-exp">$0.00</div></div>
-  </div>
-
   <div class="sec-tabs" id="sec-tabs">
     <div class="stab on" id="t-income" onclick="secTab('income')">Income</div>
     <div class="stab" id="t-expenses" onclick="secTab('expenses')">Expenses</div>
@@ -449,7 +444,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION — UPDATE THESE AFTER DEPLOYING YOUR GOOGLE APPS SCRIPT
 // ══════════════════════════════════════════════════════════════════════════════
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbypxPix0G0eT9hXrMxdqQUrqXlw01hVBteucshw9o7XcqbDi6t-DHSQSLgw1aflR55mLQ/exec';
+const GAS_URL = 'YOUR_GOOGLE_APPS_SCRIPT_DEPLOYED_URL_HERE';
 const APP_KEY = 'DOTS2026!';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -654,8 +649,6 @@ function initMain(){
   navTo('ops');
   secTab('expenses');
 }
-
-
 
 function setSyncDot(state){const d=document.getElementById('main-sync-dot');if(d)d.className='sync-dot'+(state==='syncing'?' syncing':state==='err'?' err':'');}
 
@@ -892,24 +885,24 @@ function extractDateStr(d){
 async function saveIncome(isEdit){
   if(isSaving)return;if(!validateIncome())return;isSaving=true;
   const date=document.getElementById('i-date').value;
-  const lbp=raw('i-lbp'),usd=raw('i-usd'),main=raw('i-main');
+  const lbpRaw=document.getElementById('i-lbp').value.replace(/,/g,'');
+  const lbp=lbpRaw===''?0:parseFloat(lbpRaw)||0;
+  const usd=raw('i-usd'),main=raw('i-main');
   const rate=parseFloat(document.getElementById('i-rate')?.value)||90000;
   const tLbp=lbp+(usd*rate),tUsd=tLbp/rate;
   const btn=document.getElementById(isEdit?'i-update-btn':'i-save-btn');
   if(btn){btn.disabled=true;btn.textContent='Saving...';}
   setSyncDot('syncing');
   let ref=D.editRecord?.ref||'';
-  if(!ref){try{const rr=await api('getNextRef',{type:'income'});ref=rr.ref||'INC00001';}catch(e){ref='INC'+(Date.now()%100000);}}
+  if(!ref){try{const rr=await api('getNextRef',{type:'income'});ref=rr.ref||'';}catch(e){ref='';}}
   const debits=getDebits();const totalDebitUsd=debits.reduce((s,d)=>s+d.amount,0);
   const extraPays=getExtraPayments();const extraPayUsd=getTotalExtraPayUsd(rate);
-  const incomeUsdWithAll=usd+totalDebitUsd+extraPayUsd;
-  const debitRemark=debits.length?debits.map(d=>d.name+': $'+fmtN(d.amount)).join(', '):'';
   const manualRemark=document.getElementById('i-rem')?.value||'';
-  const fullRemark=debitRemark&&manualRemark?debitRemark+' | '+manualRemark:debitRemark||manualRemark;
   const record={id:D.editRecord?.id||Date.now(),type:'income',date,staffArr:getStaff(),main,
-    incomeLbp:lbp,incomeUsd:incomeUsdWithAll,incomeUsdRaw:usd,rate,
+    incomeLbp:lbp,incomeUsd:usd,incomeUsdRaw:usd,rate,
     debit:totalDebitUsd,debitName:debits.map(d=>d.name).join(', '),debits,
-    extraPayments:extraPays,remark:fullRemark,totalLbp:tLbp,totalUsd:tUsd,ref,
+    extraPayments:extraPays,manualRemark,
+    totalLbp:tLbp,totalUsd:tUsd,ref,
     by:D.users[D.cur].name,ts:new Date().toISOString(),row:D.editRecord?.row};
   try{
     let r;
@@ -920,11 +913,11 @@ async function saveIncome(isEdit){
       const sheetRow=record.row||D.editRecord?.row;
       toast(isEdit?'Entry updated ✓':'Income saved ✓');setSyncDot('ok');
       if(D.photoData.income)await uploadPhotoIfAny('income',ref,date,sheetRow);
-    }else{toast('Saved locally (sheet error)');setSyncDot('err');}
+    }else{toast('Saved locally (sheet error): '+(r.error||''));setSyncDot('err');}
   }catch(e){toast('Saved locally (offline)');setSyncDot('err');}
   if(isEdit)D.records=D.records.map(x=>x.id===record.id?{...x,...record}:x);
   else D.records.unshift(record);
-  saveLocal();renderStats();resetIncomeForm();
+  saveLocal();resetIncomeForm();
   if(btn){btn.disabled=false;btn.textContent=isEdit?'Update entry':'Save income entry';}
   if(isEdit)cancelEdit();
   D.photoData.income=null;isSaving=false;
@@ -939,15 +932,12 @@ async function saveExpense(mode){
   const date=document.getElementById('e-date').value;
   const sup=document.getElementById('e-sup')?.value,cat=document.getElementById('e-cat')?.value;
   const amt=raw('e-amt'),cur=document.getElementById('e-cur')?.value||'USD';
-  const method=document.getElementById('e-method2')?.value||'Cash';
   const paidIn=document.getElementById('e-paidin')?.value||'',paid=document.getElementById('e-paidby')?.value||'';
   const qty=parseFloat(document.getElementById('e-qty')?.value)||1;
+  const desc=document.getElementById('e-desc')?.value||'';
   const rate=90000;const amtUsd=cur==='USD'?amt:amt/rate;
   setSyncDot('syncing');
-  let ref=D.editRecord?.ref||'';
-  if(!ref){try{const rr=await api('getNextRef',{type:'expense'});ref=rr.ref||'EXP00001';}catch(e){ref='EXP'+(Date.now()%100000);}}
-  const desc=document.getElementById('e-desc')?.value||'';
-  const record={id:D.editRecord?.id||Date.now(),type:'expense',date,sup,cat,desc,qty,amt,amtUsd,cur,method,paidIn,paid,ref,by:D.users[D.cur].name,ts:new Date().toISOString(),row:D.editRecord?.row};
+  const record={id:D.editRecord?.id||Date.now(),type:'expense',date,sup,cat,desc,qty,amt,amtUsd,cur,paidIn,paid,by:D.users[D.cur].name,ts:new Date().toISOString(),row:D.editRecord?.row};
   try{
     let r;
     if(isEdit&&D.editRecord?.row)r=await api('updateRecord',record);
@@ -956,12 +946,12 @@ async function saveExpense(mode){
       if(r.row)record.row=r.row;
       const sheetRow=record.row||D.editRecord?.row;
       toast(isEdit?'Entry updated ✓':'Expense saved ✓');setSyncDot('ok');
-      if(D.photoData.expense)await uploadPhotoIfAny('expense',ref,date,sheetRow);
-    }else{toast('Saved locally (sheet error)');setSyncDot('err');}
-  }catch(e){toast('Saved locally (offline)');setSyncDot('err');}
+      if(D.photoData.expense)await uploadPhotoIfAny('expense','',date,sheetRow);
+    }else{toast('Error: '+(r.error||'sheet error'));setSyncDot('err');}
+  }catch(e){toast('Offline error: '+e.message);setSyncDot('err');}
   if(isEdit)D.records=D.records.map(x=>x.id===record.id?{...x,...record}:x);
   else D.records.unshift(record);
-  saveLocal();renderStats();
+  saveLocal();
   document.querySelectorAll('#e-save-btns button, #e-edit-btns button').forEach(b=>{b.disabled=false;});
   if(isEdit){cancelEdit();}else{if(mode===true)resetExpenseDate();else resetExpenseForm();}
   D.photoData.expense=null;isSaving=false;
@@ -1160,7 +1150,7 @@ function closeModal(id){document.getElementById(id).classList.remove('on');}
 // ══════════════════════════════════════════════════════════════════════════════
 // UTILS
 // ══════════════════════════════════════════════════════════════════════════════
-function raw(id){const v=(document.getElementById(id)?.value||'').replace(/,/g,'');return v===''?0:parseFloat(v)||0;}
+function raw(id){return parseFloat((document.getElementById(id)?.value||'0').replace(/,/g,''))||0;}
 function fmtN(n){return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g,',');}
 function fmt(el){const v=el.value.replace(/,/g,'');const n=parseFloat(v);if(!isNaN(n)&&v!=='')el.value=fmtN(n);else if(v==='')el.value='';}
 function fmtDate(d){return d.getDate()+'-'+MONTHS[d.getMonth()]+'-'+d.getFullYear();}
