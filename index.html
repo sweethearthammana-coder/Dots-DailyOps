@@ -651,24 +651,11 @@ function initMain(){
     else{mgr.style.visibility='';mgr.style.pointerEvents='';mgr.style.position='';mgr.style.top='';}
   }
   renderChips();populateDDs();renderNav();
-  navTo(hasPerm('income')||hasPerm('expense')?'ops':'hist');
-  loadTodayStats();
+  navTo('ops');
+  secTab('expenses');
 }
 
-async function loadTodayStats(){
-  try{const r=await api('getRecords',{type:'all'});if(r.records){D.records=r.records;saveLocal();}}catch(e){}
-  renderStats();
-}
 
-function renderStats(){
-  const today=new Date().toISOString().split('T')[0];
-  const todayFmt=fmtDate(new Date(today+'T12:00:00'));
-  const tr=D.records.filter(r=>{const d=String(r.date);return d===todayFmt||d===today;});
-  const inc=tr.filter(r=>r.type==='income').reduce((s,r)=>s+(parseFloat(r.totalUsd)||0),0);
-  const exp=tr.filter(r=>r.type==='expense').reduce((s,r)=>s+(parseFloat(r.amtUsd)||0),0);
-  document.getElementById('s-inc').textContent='$'+inc.toFixed(2);
-  document.getElementById('s-exp').textContent='$'+exp.toFixed(2);
-}
 
 function setSyncDot(state){const d=document.getElementById('main-sync-dot');if(d)d.className='sync-dot'+(state==='syncing'?' syncing':state==='err'?' err':'');}
 
