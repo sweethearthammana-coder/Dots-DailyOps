@@ -814,17 +814,25 @@ function removePhoto(type){
 }
 async function uploadPhotoIfAny(type,ref,date,row){
   const pd=D.photoData[type];if(!pd)return null;
-  const ext=pd.mimeType.split('/')[1]||'jpg';const fileName=ref+'.'+ext;
   const progressEl=document.getElementById(type==='income'?'i-upload-progress':'e-upload-progress');
   progressEl.textContent='Uploading image...';progressEl.className='upload-progress';
   try{
-    const r=await api('uploadImage',{imageBase64:pd.base64,mimeType:pd.mimeType,fileName,date,type,ref});
+    // fileName is now generated server-side (INC00001.jpg etc), just pass mimeType
+    const r=await api('uploadImage',{imageBase64:pd.base64,mimeType:pd.mimeType,date,type});
     if(r.success){
-      progressEl.textContent='Image uploaded ✓ — '+r.path;progressEl.className='upload-progress ok';
-      if(row&&r.url){try{await api('updateRef',{type,row,ref,url:r.url});}catch(e){}}
-      return r.url||fileName;
-    }else{progressEl.textContent='Image upload failed: '+(r.error||'');progressEl.className='upload-progress err';return null;}
-  }catch(e){progressEl.textContent='Image upload failed (offline?)';progressEl.className='upload-progress err';return null;}
+      progressEl.textContent='Image uploaded ✓ — '+r.fileName;progressEl.className='upload-progress ok';
+      if(row&&r.url){
+        try{await api('updateRef',{type,row,ref,url:r.url,fileName:r.fileName});}catch(e){}
+      }
+      return r.url||r.fileName;
+    }else{
+      progressEl.textContent='Image upload failed: '+(r.error||'');progressEl.className='upload-progress err';
+      return null;
+    }
+  }catch(e){
+    progressEl.textContent='Image upload failed: '+e.message;progressEl.className='upload-progress err';
+    return null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
