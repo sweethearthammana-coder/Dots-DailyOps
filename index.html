@@ -889,15 +889,19 @@ async function saveIncome(isEdit){
   const lbp=lbpRaw===''?0:parseFloat(lbpRaw)||0;
   const usd=raw('i-usd'),main=raw('i-main');
   const rate=parseFloat(document.getElementById('i-rate')?.value)||90000;
-  const tLbp=lbp+(usd*rate),tUsd=tLbp/rate;
   const btn=document.getElementById(isEdit?'i-update-btn':'i-save-btn');
   if(btn){btn.disabled=true;btn.textContent='Saving...';}
   setSyncDot('syncing');
   let ref=D.editRecord?.ref||'';
   if(!ref){try{const rr=await api('getNextRef',{type:'income'});ref=rr.ref||'';}catch(e){ref='';}}
-  const debits=getDebits();const totalDebitUsd=debits.reduce((s,d)=>s+d.amount,0);
-  const extraPays=getExtraPayments();const extraPayUsd=getTotalExtraPayUsd(rate);
+  const debits=getDebits();
+  const totalDebitUsd=debits.reduce((s,d)=>s+(parseFloat(d.amount)||0),0);
+  const extraPays=getExtraPayments();
+  const extraPayUsd=getTotalExtraPayUsd(rate);
   const manualRemark=document.getElementById('i-rem')?.value||'';
+  // Total = LBP cash + (USD cash * rate) + (debit USD * rate) + (extra pay USD * rate)
+  const tLbp=lbp+((usd+totalDebitUsd+extraPayUsd)*rate);
+  const tUsd=tLbp/rate;
   const record={id:D.editRecord?.id||Date.now(),type:'income',date,staffArr:getStaff(),main,
     incomeLbp:lbp,incomeUsd:usd,incomeUsdRaw:usd,rate,
     debit:totalDebitUsd,debitName:debits.map(d=>d.name).join(', '),debits,
@@ -913,8 +917,8 @@ async function saveIncome(isEdit){
       const sheetRow=record.row||D.editRecord?.row;
       toast(isEdit?'Entry updated ✓':'Income saved ✓');setSyncDot('ok');
       if(D.photoData.income)await uploadPhotoIfAny('income',ref,date,sheetRow);
-    }else{toast('Saved locally (sheet error): '+(r.error||''));setSyncDot('err');}
-  }catch(e){toast('Saved locally (offline)');setSyncDot('err');}
+    }else{toast('Error: '+(r.error||'sheet error'));setSyncDot('err');}
+  }catch(e){toast('Offline: '+e.message);setSyncDot('err');}
   if(isEdit)D.records=D.records.map(x=>x.id===record.id?{...x,...record}:x);
   else D.records.unshift(record);
   saveLocal();resetIncomeForm();
