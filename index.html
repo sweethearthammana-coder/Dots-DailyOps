@@ -703,7 +703,7 @@ function validateIncome(){
   const staff=getStaff().filter(s=>s!=='None');
   if(!staff.length){markErr('lbl-i-staff');document.getElementById('staff-chips').classList.add('err');ok=false;}
   if(!raw('i-main')){markErr('lbl-i-main','i-main');ok=false;}
-  if(!raw('i-lbp')){markErr('lbl-i-lbp','i-lbp');ok=false;}
+  if(document.getElementById('i-lbp').value===''){markErr('lbl-i-lbp','i-lbp');ok=false;}
   if(!raw('i-usd')){markErr('lbl-i-usd','i-usd');ok=false;}
   if(!ok)toast('Please fill in all required fields *');
   return ok;
@@ -1160,7 +1160,7 @@ function closeModal(id){document.getElementById(id).classList.remove('on');}
 // ══════════════════════════════════════════════════════════════════════════════
 // UTILS
 // ══════════════════════════════════════════════════════════════════════════════
-function raw(id){return parseFloat((document.getElementById(id)?.value||'0').replace(/,/g,''))||0;}
+function raw(id){const v=(document.getElementById(id)?.value||'').replace(/,/g,'');return v===''?0:parseFloat(v)||0;}
 function fmtN(n){return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g,',');}
 function fmt(el){const v=el.value.replace(/,/g,'');const n=parseFloat(v);if(!isNaN(n)&&v!=='')el.value=fmtN(n);else if(v==='')el.value='';}
 function fmtDate(d){return d.getDate()+'-'+MONTHS[d.getMonth()]+'-'+d.getFullYear();}
