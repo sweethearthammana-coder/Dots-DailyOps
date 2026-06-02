@@ -545,7 +545,8 @@ function renderNav(){
   const perms=D.users[D.cur]?.perms||[];
   const tabs=[];
   if(perms.includes('income')||perms.includes('expense')) tabs.push({id:'ops',ic:'📋',lbl:'Operations'});
-  if(perms.includes('history')) tabs.push({id:'hist',ic:'📂',lbl:'History'});
+  // History tab: only show for managers
+  if(isMgr()) tabs.push({id:'hist',ic:'📂',lbl:'History'});
   if(perms.includes('manager')) tabs.push({id:'mgr',ic:'⚙️',lbl:'Manager'});
   document.getElementById('nav-bot').innerHTML=tabs.map(t=>`<div class="nb ${D.sTab===t.id?'on':''}" id="nb-${t.id}" onclick="navTo('${t.id}')"><div class="nb-ic">${t.ic}</div>${t.lbl}</div>`).join('');
 }
@@ -593,6 +594,15 @@ function eTab(t){
   document.getElementById('expense-new').style.display=t==='new'?'block':'none';
   const eh=document.getElementById('expense-hist');
   if(eh){eh.style.display=t==='hist'?'block':'none';if(t==='hist')renderHistExpense();}
+}
+
+function applyHistoryVisibility(){
+  // Hide history sub-tabs for non-managers
+  const canSeeHistory=isMgr();
+  const itHist=document.getElementById('it-hist');
+  const etHist=document.getElementById('et-hist');
+  if(itHist)itHist.style.display=canSeeHistory?'':'none';
+  if(etHist)etHist.style.display=canSeeHistory?'':'none';
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -645,7 +655,7 @@ function initMain(){
     if(!hasPerm('manager')){mgr.style.display='none';mgr.style.visibility='hidden';mgr.style.pointerEvents='none';mgr.style.position='absolute';mgr.style.top='-9999px';}
     else{mgr.style.visibility='';mgr.style.pointerEvents='';mgr.style.position='';mgr.style.top='';}
   }
-  renderChips();populateDDs();renderNav();
+  renderChips();populateDDs();renderNav();applyHistoryVisibility();
   navTo('ops');
   secTab('expenses');
 }
@@ -794,17 +804,59 @@ function choosePhotoSource(source){
 }
 function handlePhoto(evt,type){
   const file=evt.target.files[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=function(e){
-    const base64=e.target.result.split(',')[1];const mimeType=file.type||'image/jpeg';
+  const preview=document.getElementById(type==='income'?'i-photo-preview':'e-photo-preview');
+  const wrap=document.getElementById(type==='income'?'i-photo-preview-wrap':'e-photo-preview-wrap');
+  const nameEl=document.getElementById(type==='income'?'i-photo-name':'e-photo-name');
+  const section=document.getElementById(type==='income'?'i-photo-section':'e-photo-section');
+  const progressEl=document.getElementById(type==='income'?'i-upload-progress':'e-upload-progress');
+  progressEl.textContent='Compressing image...';progressEl.className='upload-progress';
+
+  const img=new Image();
+  const objectUrl=URL.createObjectURL(file);
+  img.onload=function(){
+    URL.revokeObjectURL(objectUrl);
+    // Target max 250kb. Start with quality 0.8, max dimension 1200px
+    const MAX_DIM=1200, TARGET_BYTES=250*1024;
+    let w=img.width, h=img.height;
+    if(w>MAX_DIM||h>MAX_DIM){
+      if(w>h){h=Math.round(h*(MAX_DIM/w));w=MAX_DIM;}
+      else{w=Math.round(w*(MAX_DIM/h));h=MAX_DIM;}
+    }
+    const canvas=document.createElement('canvas');
+    canvas.width=w;canvas.height=h;
+    const ctx=canvas.getContext('2d');
+    ctx.drawImage(img,0,0,w,h);
+
+    // Try decreasing quality until under TARGET_BYTES
+    let quality=0.82;
+    let dataUrl=canvas.toDataURL('image/jpeg',quality);
+    while(dataUrl.length*0.75>TARGET_BYTES&&quality>0.3){
+      quality-=0.08;
+      dataUrl=canvas.toDataURL('image/jpeg',quality);
+    }
+    const base64=dataUrl.split(',')[1];
+    const mimeType='image/jpeg';
     D.photoData[type]={base64,mimeType,file};
-    const preview=document.getElementById(type==='income'?'i-photo-preview':'e-photo-preview');
-    const wrap=document.getElementById(type==='income'?'i-photo-preview-wrap':'e-photo-preview-wrap');
-    const nameEl=document.getElementById(type==='income'?'i-photo-name':'e-photo-name');
-    const section=document.getElementById(type==='income'?'i-photo-section':'e-photo-section');
-    preview.src=e.target.result;nameEl.textContent=file.name;wrap.style.display='block';section.classList.add('has-photo');
+    preview.src=dataUrl;
+    const sizeKb=Math.round(base64.length*0.75/1024);
+    nameEl.textContent=file.name+' (compressed to ~'+sizeKb+'kb)';
+    wrap.style.display='block';section.classList.add('has-photo');
+    progressEl.textContent='';progressEl.className='upload-progress';
   };
-  reader.readAsDataURL(file);evt.target.value='';
+  img.onerror=function(){
+    // Fallback: read as-is
+    const reader=new FileReader();
+    reader.onload=function(e){
+      const base64=e.target.result.split(',')[1];const mimeType=file.type||'image/jpeg';
+      D.photoData[type]={base64,mimeType,file};
+      preview.src=e.target.result;nameEl.textContent=file.name;
+      wrap.style.display='block';section.classList.add('has-photo');
+      progressEl.textContent='';
+    };
+    reader.readAsDataURL(file);
+  };
+  img.src=objectUrl;
+  evt.target.value='';
 }
 function removePhoto(type){
   D.photoData[type]=null;
