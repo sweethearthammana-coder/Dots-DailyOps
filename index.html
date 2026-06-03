@@ -492,11 +492,81 @@ function saveLocal(){sl('dots_usr',D.users);sl('dots_rec',D.records);sl('dots_li
 function saveSheetLists(){sl('dots_lists_sheet',D.lists);}
 
 // ══════════════════════════════════════════════════════════════════════════════
-// API
+// API — with timeout, retry, and pending queue
 // ══════════════════════════════════════════════════════════════════════════════
-async function api(action,data={}){
-  const res=await fetch(GAS_URL,{method:'POST',body:JSON.stringify({action,key:APP_KEY,...data})});
-  return res.json();
+async function apiOnce(action, data={}, timeoutMs=25000){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const res=await fetch(GAS_URL,{
+      method:'POST',
+      body:JSON.stringify({action,key:APP_KEY,...data}),
+      signal:controller.signal
+    });
+    return await res.json();
+  }finally{clearTimeout(timer);}
+}
+
+async function api(action, data={}, retries=3){
+  let lastErr;
+  for(let i=0;i<retries;i++){
+    try{
+      if(i>0){
+        toast('Retrying... ('+(i+1)+'/'+retries+')');
+        await new Promise(r=>setTimeout(r,2000*i));
+      }
+      return await apiOnce(action,data);
+    }catch(e){
+      lastErr=e;
+    }
+  }
+  throw lastErr;
+}
+
+// Pending queue — saves that failed and need to be retried
+const PENDING_KEY='dots_pending';
+function getPending(){return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]');}
+function savePending(q){localStorage.setItem(PENDING_KEY,JSON.stringify(q));}
+function addPending(record){
+  const q=getPending();
+  // Avoid duplicates by id
+  const exists=q.find(r=>r.id===record.id);
+  if(!exists)q.push({...record,_pendingTs:Date.now()});
+  savePending(q);
+  updatePendingBadge();
+}
+function removePending(id){
+  const q=getPending().filter(r=>r.id!==id);
+  savePending(q);
+  updatePendingBadge();
+}
+function updatePendingBadge(){
+  const q=getPending();
+  const dot=document.getElementById('main-sync-dot');
+  if(!dot)return;
+  if(q.length>0){dot.className='sync-dot err';dot.title=q.length+' pending';}
+  else{dot.className='sync-dot';dot.title='';}
+}
+
+async function flushPending(){
+  const q=getPending();
+  if(!q.length)return;
+  toast('Syncing '+q.length+' pending entries...',4000);
+  setSyncDot('syncing');
+  let synced=0;
+  for(const record of q){
+    try{
+      const action=record.type==='income'?'saveIncome':'saveExpense';
+      const r=await apiOnce(action,record,20000);
+      if(r.success||r.row){
+        removePending(record.id);
+        synced++;
+      }
+    }catch(e){ /* still offline, leave in queue */ }
+  }
+  if(synced>0)toast(synced+' pending entries synced ✓');
+  updatePendingBadge();
+  setSyncDot(getPending().length>0?'err':'ok');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -637,7 +707,7 @@ function pk(k){
   if(D.pinBuf.length===4)checkPin();
 }
 function updateDots(){for(let i=1;i<=4;i++)document.getElementById('pd'+i).classList.toggle('f',i<=D.pinBuf.length);}
-function checkPin(){const u=D.users[D.loginTgt];if(D.pinBuf===u.pin){D.cur=D.loginTgt;show('s-main');initMain();}else{document.getElementById('pin-err').textContent='Incorrect PIN — try again';D.pinBuf='';updateDots();}}
+function checkPin(){const u=D.users[D.loginTgt];if(D.pinBuf===u.pin){D.cur=D.loginTgt;show('s-main');initMain();setTimeout(flushPending,3000);}else{document.getElementById('pin-err').textContent='Incorrect PIN — try again';D.pinBuf='';updateDots();}}
 function logout(){D.cur=null;D.editRecord=null;show('s-login');syncStaff();}
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -656,6 +726,7 @@ function initMain(){
     else{mgr.style.visibility='';mgr.style.pointerEvents='';mgr.style.position='';mgr.style.top='';}
   }
   renderChips();populateDDs();renderNav();applyHistoryVisibility();
+  updatePendingBadge();
   navTo('ops');
   secTab('expenses');
 }
@@ -977,8 +1048,14 @@ async function saveIncome(isEdit){
       const sheetRow=record.row||D.editRecord?.row;
       toast(isEdit?'Entry updated ✓':'Income saved ✓');setSyncDot('ok');
       if(D.photoData.income)await uploadPhotoIfAny('income',ref,date,sheetRow);
-    }else{toast('Error: '+(r.error||'sheet error'));setSyncDot('err');}
-  }catch(e){toast('Offline: '+e.message);setSyncDot('err');}
+    }else{
+      toast('Sheet error — saved locally, will retry');setSyncDot('err');
+      addPending(record);
+    }
+  }catch(e){
+    toast('No connection — saved locally, will retry automatically');setSyncDot('err');
+    addPending(record);
+  }
   if(isEdit)D.records=D.records.map(x=>x.id===record.id?{...x,...record}:x);
   else D.records.unshift(record);
   saveLocal();resetIncomeForm();
@@ -992,7 +1069,7 @@ async function saveIncome(isEdit){
 // ══════════════════════════════════════════════════════════════════════════════
 async function saveExpense(mode){
   if(isSaving)return;const isEdit=mode==='edit';if(!validateExpense())return;isSaving=true;
-  document.querySelectorAll('#e-save-btns button, #e-edit-btns button').forEach(b=>{b.disabled=true;});
+  document.querySelectorAll('#e-save-btns button, #e-edit-btns button').forEach(b=>{b.disabled=true;b.textContent='Saving...';});
   const date=document.getElementById('e-date').value;
   const sup=document.getElementById('e-sup')?.value,cat=document.getElementById('e-cat')?.value;
   const amt=raw('e-amt'),cur=document.getElementById('e-cur')?.value||'USD';
@@ -1002,6 +1079,7 @@ async function saveExpense(mode){
   const rate=90000;const amtUsd=cur==='USD'?amt:amt/rate;
   setSyncDot('syncing');
   const record={id:D.editRecord?.id||Date.now(),type:'expense',date,sup,cat,desc,qty,amt,amtUsd,cur,paidIn,paid,by:D.users[D.cur].name,ts:new Date().toISOString(),row:D.editRecord?.row};
+  let savedOk=false;
   try{
     let r;
     if(isEdit&&D.editRecord?.row)r=await api('updateRecord',record);
@@ -1010,13 +1088,21 @@ async function saveExpense(mode){
       if(r.row)record.row=r.row;
       const sheetRow=record.row||D.editRecord?.row;
       toast(isEdit?'Entry updated ✓':'Expense saved ✓');setSyncDot('ok');
+      savedOk=true;
       if(D.photoData.expense)await uploadPhotoIfAny('expense','',date,sheetRow);
-    }else{toast('Error: '+(r.error||'sheet error'));setSyncDot('err');}
-  }catch(e){toast('Offline error: '+e.message);setSyncDot('err');}
+    }else{
+      toast('Sheet error — saved locally, will retry');setSyncDot('err');
+      addPending(record);
+    }
+  }catch(e){
+    toast('No connection — saved locally, will retry automatically');setSyncDot('err');
+    addPending(record);
+    savedOk=true; // still reset form — data is safe in pending queue
+  }
   if(isEdit)D.records=D.records.map(x=>x.id===record.id?{...x,...record}:x);
   else D.records.unshift(record);
   saveLocal();
-  document.querySelectorAll('#e-save-btns button, #e-edit-btns button').forEach(b=>{b.disabled=false;});
+  document.querySelectorAll('#e-save-btns button, #e-edit-btns button').forEach(b=>{b.disabled=false;b.textContent=b.id==='e-save-reenter'?'Save & re-enter':'Save entry';});
   if(isEdit){cancelEdit();}else{if(mode===true)resetExpenseDate();else resetExpenseForm();}
   D.photoData.expense=null;isSaving=false;
 }
