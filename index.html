@@ -444,7 +444,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION — UPDATE THESE AFTER DEPLOYING YOUR GOOGLE APPS SCRIPT
 // ══════════════════════════════════════════════════════════════════════════════
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbypxPix0G0eT9hXrMxdqQUrqXlw01hVBteucshw9o7XcqbDi6t-DHSQSLgw1aflR55mLQ/exec';
+const GAS_URL = 'YOUR_GOOGLE_APPS_SCRIPT_DEPLOYED_URL_HERE';
 const APP_KEY = 'DOTS2026!';
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -525,46 +525,76 @@ async function api(action, data={}, retries=3){
 
 // Pending queue — saves that failed and need to be retried
 const PENDING_KEY='dots_pending';
+const PENDING_MAX_RETRIES=3;
+const PENDING_MAX_AGE_MS=24*60*60*1000; // 24 hours
+
 function getPending(){return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]');}
 function savePending(q){localStorage.setItem(PENDING_KEY,JSON.stringify(q));}
+
 function addPending(record){
   const q=getPending();
   // Avoid duplicates by id
   const exists=q.find(r=>r.id===record.id);
-  if(!exists)q.push({...record,_pendingTs:Date.now()});
+  if(!exists)q.push({...record,_pendingTs:Date.now(),_retries:0});
   savePending(q);
   updatePendingBadge();
 }
+
 function removePending(id){
   const q=getPending().filter(r=>r.id!==id);
   savePending(q);
   updatePendingBadge();
 }
+
+function cleanExpiredPending(){
+  const now=Date.now();
+  const q=getPending().filter(r=>{
+    const tooOld=(now-r._pendingTs)>PENDING_MAX_AGE_MS;
+    const tooManyRetries=(r._retries||0)>=PENDING_MAX_RETRIES;
+    return !tooOld && !tooManyRetries;
+  });
+  savePending(q);
+  updatePendingBadge();
+}
+
 function updatePendingBadge(){
   const q=getPending();
   const dot=document.getElementById('main-sync-dot');
   if(!dot)return;
-  if(q.length>0){dot.className='sync-dot err';dot.title=q.length+' pending';}
+  if(q.length>0){dot.className='sync-dot err';dot.title=q.length+' pending — tap to retry';}
   else{dot.className='sync-dot';dot.title='';}
 }
 
 async function flushPending(){
+  cleanExpiredPending(); // remove stale entries first
   const q=getPending();
   if(!q.length)return;
   toast('Syncing '+q.length+' pending entries...',4000);
   setSyncDot('syncing');
-  let synced=0;
-  for(const record of q){
+  let synced=0,failed=0;
+  for(const record of [...q]){ // copy array so removals don't affect iteration
     try{
       const action=record.type==='income'?'saveIncome':'saveExpense';
       const r=await apiOnce(action,record,20000);
       if(r.success||r.row){
         removePending(record.id);
         synced++;
+      }else{
+        // Increment retry count
+        const updated=getPending().map(p=>p.id===record.id?{...p,_retries:(p._retries||0)+1}:p);
+        savePending(updated);
+        failed++;
       }
-    }catch(e){ /* still offline, leave in queue */ }
+    }catch(e){
+      // Increment retry count on network error
+      const updated=getPending().map(p=>p.id===record.id?{...p,_retries:(p._retries||0)+1}:p);
+      savePending(updated);
+      failed++;
+    }
   }
+  cleanExpiredPending(); // drop anything that hit max retries
   if(synced>0)toast(synced+' pending entries synced ✓');
+  else if(failed>0)toast('Could not sync — will retry on next login');
   updatePendingBadge();
   setSyncDot(getPending().length>0?'err':'ok');
 }
@@ -1189,7 +1219,7 @@ function renderHistItem(r){
 // MANAGER PANEL
 // ══════════════════════════════════════════════════════════════════════════════
 function renderMgr(){
-  const tabs=[{id:'staff',lbl:'Staff'},{id:'lists',lbl:'Pick Lists'},{id:'export',lbl:'Export'}];
+  const tabs=[{id:'staff',lbl:'Staff'},{id:'lists',lbl:'Pick Lists'},{id:'export',lbl:'Export'},{id:'settings',lbl:'Settings'}];
   D.mT=D.mT||'staff';
   document.getElementById('mgr-tab-bar').innerHTML=tabs.map(t=>`<div class="sub-tab ${D.mT===t.id?'on':''}" onclick="mgrTab('${t.id}')">${t.lbl}</div>`).join('');
   renderMgrBody();
@@ -1202,6 +1232,56 @@ function renderMgrBody(){
   if(D.mT==='staff')renderMgrStaff(el);
   else if(D.mT==='lists')renderMgrLists(el);
   else if(D.mT==='export')renderMgrExport(el);
+  else if(D.mT==='settings')renderMgrSettings(el);
+}
+
+function renderMgrSettings(el){
+  const pending=getPending();
+  const pendingCount=pending.length;
+  el.innerHTML=`
+    <div class="sec-title">Device & Cache</div>
+
+    <div class="totals-box" style="margin-bottom:16px;">
+      <div class="tot-row"><span class="tot-lbl">App version</span><span class="tot-val" style="font-size:14px;font-family:monospace;">${APP_VERSION}</span></div>
+      <div class="tot-row"><span class="tot-lbl">Pending entries</span><span class="tot-val" style="font-size:14px;color:${pendingCount>0?'#dc2626':'#16a34a'}">${pendingCount>0?pendingCount+' waiting':'None ✓'}</span></div>
+    </div>
+
+    ${pendingCount>0?`
+    <div class="info-note" style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;margin-bottom:16px;">
+      ⚠️ There are <strong>${pendingCount}</strong> entries waiting to sync to Google Sheets.
+      Try <strong>Retry pending</strong> first before clearing cache.
+    </div>
+    <button class="save-btn" style="margin-bottom:10px;background:#166534;" onclick="flushPending().then(()=>renderMgrSettings(document.getElementById('mgr-body')))">
+      🔄 Retry pending now
+    </button>`:''}
+
+    <div class="sec-title" style="margin-top:8px;">Clear Cache</div>
+    <div class="info-note" style="margin-bottom:16px;">
+      Clears all locally cached data on <strong>this device only</strong> — staff list, records, lists, and any pending entries.
+      Use this if a staff member is seeing old or duplicate data. The app will reconnect to Google Sheets immediately after.
+    </div>
+
+    <button class="save-btn sec" style="margin-bottom:10px;" onclick="confirmClearCache()">
+      🗑 Clear this device's cache
+    </button>
+
+    <div class="sec-title" style="margin-top:8px;">Share clear link</div>
+    <div class="info-note" style="margin-bottom:16px;">
+      Send this to a staff member — when they open it, their cache clears automatically.
+    </div>
+    <button class="save-btn sec" onclick="copyClearLink()">📋 Copy clear-cache link</button>
+  `;
+}
+
+function confirmClearCache(){
+  if(confirm('Clear all cached data on this device?\n\nThe app will reload and reconnect to Google Sheets.\n\nAny unsynced pending entries will be lost.')){
+    clearAllCache();
+  }
+}
+
+function copyClearLink(){
+  const url=window.location.origin+window.location.pathname+'?clearcache=1';
+  navigator.clipboard.writeText(url).then(()=>toast('Link copied — send to staff member'));
 }
 
 function renderMgrStaff(el){
@@ -1309,6 +1389,45 @@ function toast(msg,dur=2500){const t=document.getElementById('toast');t.textCont
 // ══════════════════════════════════════════════════════════════════════════════
 // BOOT
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── VERSION-BASED AUTO CACHE CLEAR ───────────────────────────────────────────
+// Change this number whenever you want all devices to auto-clear their cache
+const APP_VERSION = '1.0.3';
+const VERSION_KEY = 'dots_app_version';
+
+function checkVersion(){
+  // Handle ?clearcache=1 URL param (from share link sent to staff)
+  if(new URLSearchParams(window.location.search).get('clearcache')==='1'){
+    for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k&&k.startsWith('dots_'))localStorage.removeItem(k);}
+    localStorage.setItem(VERSION_KEY,APP_VERSION);
+    if('caches' in window)caches.keys().then(keys=>keys.forEach(k=>caches.delete(k)));
+    // Remove the param from URL without reload
+    window.history.replaceState({},'',window.location.pathname);
+    console.log('Cache cleared via link');
+    return;
+  }
+  const stored=localStorage.getItem(VERSION_KEY);
+  if(stored!==APP_VERSION){
+    for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k&&k.startsWith('dots_'))localStorage.removeItem(k);}
+    localStorage.setItem(VERSION_KEY,APP_VERSION);
+    if('caches' in window)caches.keys().then(keys=>keys.forEach(k=>caches.delete(k)));
+    console.log('DOTS cache cleared for version',APP_VERSION);
+  }
+}
+
+// ── MANUAL CACHE CLEAR (callable from console if needed) ─────────────────────
+function clearAllCache(){
+  for(let i=localStorage.length-1; i>=0; i--){
+    const k=localStorage.key(i);
+    if(k&&k.startsWith('dots_'))localStorage.removeItem(k);
+  }
+  localStorage.setItem(VERSION_KEY, APP_VERSION);
+  if('caches' in window) caches.keys().then(keys=>keys.forEach(k=>caches.delete(k)));
+  toast('Cache cleared — reloading...',1500);
+  setTimeout(()=>location.reload(true),1600);
+}
+
+checkVersion(); // run before loadLocal so stale data is gone first
 loadLocal();
 syncStaff();
 if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
